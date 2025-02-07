@@ -1,0 +1,38 @@
+version: '3.3'
+services:
+  plausible_db:
+    image: postgres:14-alpine
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    environment:
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_USER=postgres
+      - POSTGRES_DB=plausible_db
+
+  plausible_events_db:
+    image: clickhouse/clickhouse-server:23.3.7.5-alpine
+    volumes:
+      - event-data:/var/lib/clickhouse
+    environment:
+      - CLICKHOUSE_DB=plausible_events_db
+
+  plausible:
+    image: plausible-analytics:latest
+    depends_on:
+      - plausible_db
+      - plausible_events_db
+    ports:
+      - "8000:8000"
+    environment:
+      - ADMIN_USER_EMAIL=admin@example.com
+      - ADMIN_USER_NAME=admin
+      - ADMIN_USER_PWD=admin
+      - BASE_URL=http://localhost:8000
+      - SECRET_KEY_BASE=Kyo9VdQVYrVP2TP0bIuX5S2jOQkCz6zJDr15ezR2nJ0SvsPwW63yhaP1iJIG5Q57AAn5tyfbfK/aWpEhilJRbg==
+      - DATABASE_URL=postgres://postgres:postgres@plausible_db:5432/plausible_db
+      - CLICKHOUSE_DATABASE_URL=http://plausible_events_db:8123/plausible_events_db
+    command: sh -c "sleep 10 && /app/bin/plausible eval 'Plausible.Release.createdb()' && /app/bin/plausible eval 'Plausible.Release.interweave_migrate()' && /entrypoint.sh run"
+
+volumes:
+  db-data:
+  event-data: 
