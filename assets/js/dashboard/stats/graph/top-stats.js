@@ -6,7 +6,6 @@ import { SecondsSinceLastLoad } from '../../util/seconds-since-last-load'
 import classNames from 'classnames'
 import * as storage from '../../util/storage'
 import { formatDateRange } from '../../util/date'
-import { getGraphableMetrics } from './graph-util'
 import { useQueryContext } from '../../query-context'
 import { useSiteContext } from '../../site-context'
 import { useLastLoadContext } from '../../last-load-context'
@@ -26,7 +25,12 @@ function topStatNumberLong(metric, value) {
   return formatter(value)
 }
 
-export default function TopStats({ data, onMetricUpdate, tooltipBoundary }) {
+export default function TopStats({
+  data,
+  onMetricUpdate,
+  tooltipBoundary,
+  graphableMetrics
+}) {
   const { query } = useQueryContext()
   const lastLoadTimestamp = useLastLoadContext()
   const site = useSiteContext()
@@ -35,6 +39,7 @@ export default function TopStats({ data, onMetricUpdate, tooltipBoundary }) {
 
   function tooltip(stat) {
     let statName = stat.name.toLowerCase()
+    const warning = warningText(stat.graph_metric, site)
     statName = stat.value === 1 ? statName.slice(0, -1) : statName
 
     return (
@@ -64,12 +69,35 @@ export default function TopStats({ data, onMetricUpdate, tooltipBoundary }) {
             <SecondsSinceLastLoad lastLoadTimestamp={lastLoadTimestamp} />s ago
           </p>
         )}
+
+        {warning ? (
+          <p className="font-normal text-xs whitespace-nowrap">* {warning}</p>
+        ) : null}
       </div>
     )
   }
 
+  function warningText(metric, site) {
+    const warning = data.meta.metric_warnings?.[metric]
+    if (!warning) {
+      return null
+    }
+
+    if (
+      metric === 'scroll_depth' &&
+      warning.code === 'no_imported_scroll_depth'
+    ) {
+      return 'Does not include imported data'
+    }
+
+    if (metric === 'time_on_page' && site.flags.new_time_on_page) {
+      return warning.message
+    }
+
+    return null
+  }
+
   function canMetricBeGraphed(stat) {
-    const graphableMetrics = getGraphableMetrics(query, site)
     return graphableMetrics.includes(stat.graph_metric)
   }
 
@@ -114,6 +142,9 @@ export default function TopStats({ data, onMetricUpdate, tooltipBoundary }) {
         {statDisplayName}
         {statExtraName && (
           <span className="hidden sm:inline-block ml-1">{statExtraName}</span>
+        )}
+        {warningText(stat.graph_metric, site) && (
+          <span className="inline-block ml-1">*</span>
         )}
       </div>
     )
@@ -179,7 +210,8 @@ export default function TopStats({ data, onMetricUpdate, tooltipBoundary }) {
     )
   }
 
-  const stats = data && data.top_stats.map(renderStat)
+  const stats =
+    data && data.top_stats.filter((stat) => stat.value !== null).map(renderStat)
 
   if (stats && query.period === 'realtime') {
     stats.push(blinkingDot())

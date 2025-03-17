@@ -284,11 +284,7 @@ defmodule Plausible.Exports do
   defmacrop visit_duration(t) do
     quote do
       selected_as(
-        fragment(
-          "toUInt64(round(greatest(sum(?*?),0)*any(_sample_factor)))",
-          unquote(t).sign,
-          unquote(t).duration
-        ),
+        scale_sample(fragment("greatest(sum(?*?),0)", unquote(t).sign, unquote(t).duration)),
         :visit_duration
       )
     end
@@ -297,7 +293,7 @@ defmodule Plausible.Exports do
   defmacrop visitors(t) do
     quote do
       selected_as(
-        fragment("toUInt64(round(uniq(?)*any(_sample_factor)))", unquote(t).user_id),
+        scale_sample(fragment("uniq(?)", unquote(t).user_id)),
         :visitors
       )
     end
@@ -306,7 +302,7 @@ defmodule Plausible.Exports do
   defmacrop visits(t) do
     quote do
       selected_as(
-        fragment("toUInt64(round(greatest(sum(?),0)*any(_sample_factor)))", unquote(t).sign),
+        scale_sample(fragment("greatest(sum(?),0)", unquote(t).sign)),
         :visits
       )
     end
@@ -315,10 +311,12 @@ defmodule Plausible.Exports do
   defmacrop bounces(t) do
     quote do
       selected_as(
-        fragment(
-          "toUInt32(round(greatest(sum(?*?),0)*any(_sample_factor)))",
-          unquote(t).sign,
-          unquote(t).is_bounce
+        scale_sample(
+          fragment(
+            "greatest(sum(?*?),0)",
+            unquote(t).sign,
+            unquote(t).is_bounce
+          )
         ),
         :bounces
       )
@@ -328,10 +326,12 @@ defmodule Plausible.Exports do
   defmacrop pageviews(t) do
     quote do
       selected_as(
-        fragment(
-          "toUInt64(round(greatest(sum(?*?),0)*any(_sample_factor)))",
-          unquote(t).sign,
-          unquote(t).pageviews
+        scale_sample(
+          fragment(
+            "greatest(sum(?*?),0)",
+            unquote(t).sign,
+            unquote(t).pageviews
+          )
         ),
         :pageviews
       )
@@ -359,7 +359,7 @@ defmodule Plausible.Exports do
           date: date(e.timestamp, ^timezone),
           pageviews:
             selected_as(
-              fragment("toUInt64(round(countIf(?='pageview')*any(_sample_factor)))", e.name),
+              scale_sample(fragment("countIf(?='pageview')", e.name)),
               :pageviews
             )
         }
@@ -415,10 +415,7 @@ defmodule Plausible.Exports do
   end
 
   defp export_pages_q(site_id, current_user_id, timezone, date_range) do
-    site = Plausible.Repo.get(Plausible.Site, site_id)
-    current_user = current_user_id && Plausible.Repo.get(Plausible.Auth.User, current_user_id)
-
-    include_scroll_depth? = Plausible.Stats.ScrollDepth.check_feature_visible!(site, current_user)
+    _will_be_used_for_time_on_page_flag = current_user_id
 
     base_q =
       from(e in sampled("events_v2"),
@@ -428,67 +425,47 @@ defmodule Plausible.Exports do
         order_by: selected_as(:date)
       )
 
-    if include_scroll_depth? do
-      max_scroll_depth_per_visitor_q =
-        from(e in "events_v2",
-          where: ^export_filter(site_id, date_range),
-          where: e.name == "engagement" and e.scroll_depth <= 100,
-          select: %{
-            date: date(e.timestamp, ^timezone),
-            page: selected_as(e.pathname, :page),
-            user_id: e.user_id,
-            max_scroll_depth: max(e.scroll_depth)
-          },
-          group_by: [e.user_id, selected_as(:date), selected_as(:page)]
-        )
-
-      scroll_depth_q =
-        from(p in subquery(max_scroll_depth_per_visitor_q),
-          select: %{
-            date: p.date,
-            page: p.page,
-            scroll_depth:
-              fragment(
-                "if(isNull(sum(?)), NULL, toUInt64(sum(?)))",
-                p.max_scroll_depth,
-                p.max_scroll_depth
-              ),
-            pageleave_visitors: fragment("uniq(?)", p.user_id)
-          },
-          group_by: [:date, :page]
-        )
-
-      from(e in base_q,
-        left_join: s in subquery(scroll_depth_q),
-        on: s.date == selected_as(:date) and s.page == selected_as(:page),
-        select: [
-          date(e.timestamp, ^timezone),
-          selected_as(fragment("any(?)", e.hostname), :hostname),
-          selected_as(e.pathname, :page),
-          selected_as(
-            fragment("toUInt64(round(uniq(?)*any(_sample_factor)))", e.session_id),
-            :visits
-          ),
-          visitors(e),
-          selected_as(fragment("toUInt64(round(count()*any(_sample_factor)))"), :pageviews),
-          selected_as(fragment("any(?)", s.scroll_depth), :scroll_depth),
-          selected_as(fragment("any(?)", s.pageleave_visitors), :pageleave_visitors)
-        ]
+    max_scroll_depth_per_session_q =
+      from(e in "events_v2",
+        where: ^export_filter(site_id, date_range),
+        where: e.name == "engagement" and e.scroll_depth <= 100,
+        select: %{
+          date: date(e.timestamp, ^timezone),
+          page: selected_as(e.pathname, :page),
+          session_id: e.session_id,
+          max_scroll_depth: max(e.scroll_depth)
+        },
+        group_by: [e.session_id, selected_as(:date), selected_as(:page)]
       )
-    else
-      base_q
-      |> select([e], [
+
+    scroll_depth_q =
+      from(p in subquery(max_scroll_depth_per_session_q),
+        select: %{
+          date: p.date,
+          page: p.page,
+          total_scroll_depth: fragment("sum(?)", p.max_scroll_depth),
+          total_scroll_depth_visits: fragment("uniq(?)", p.session_id)
+        },
+        group_by: [:date, :page]
+      )
+
+    from(e in base_q,
+      left_join: s in subquery(scroll_depth_q),
+      on: s.date == selected_as(:date) and s.page == selected_as(:page),
+      select: [
         date(e.timestamp, ^timezone),
         selected_as(fragment("any(?)", e.hostname), :hostname),
         selected_as(e.pathname, :page),
         selected_as(
-          fragment("toUInt64(round(uniq(?)*any(_sample_factor)))", e.session_id),
+          scale_sample(fragment("uniq(?)", e.session_id)),
           :visits
         ),
         visitors(e),
-        selected_as(fragment("toUInt64(round(count()*any(_sample_factor)))"), :pageviews)
-      ])
-    end
+        selected_as(scale_sample(fragment("count()")), :pageviews),
+        selected_as(fragment("any(?)", s.total_scroll_depth), :total_scroll_depth),
+        selected_as(fragment("any(?)", s.total_scroll_depth_visits), :total_scroll_depth_visits)
+      ]
+    )
   end
 
   defp export_entry_pages_q(site_id, timezone, date_range) do
@@ -501,7 +478,7 @@ defmodule Plausible.Exports do
         s.entry_page,
         visitors(s),
         selected_as(
-          fragment("toUInt64(round(greatest(sum(?),0)*any(_sample_factor)))", s.sign),
+          scale_sample(fragment("greatest(sum(?),0)", s.sign)),
           :entrances
         ),
         visit_duration(s),
@@ -521,7 +498,7 @@ defmodule Plausible.Exports do
         visitors(s),
         visit_duration(s),
         selected_as(
-          fragment("toUInt64(round(greatest(sum(?),0)*any(_sample_factor)))", s.sign),
+          scale_sample(fragment("greatest(sum(?),0)", s.sign)),
           :exits
         ),
         bounces(s),
@@ -562,7 +539,7 @@ defmodule Plausible.Exports do
           :path
         ),
         visitors(e),
-        selected_as(fragment("toUInt64(round(count()*any(_sample_factor)))"), :events)
+        selected_as(scale_sample(fragment("count()")), :events)
       ]
   end
 

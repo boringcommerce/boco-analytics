@@ -19,16 +19,16 @@ defmodule PlausibleWeb.Live.ChoosePlan do
         Plausible.Teams.Memberships.all_pending_site_transfers(current_user.email)
       end)
       |> assign_new(:usage, fn %{
-                                 my_team: my_team,
+                                 current_team: current_team,
                                  pending_ownership_site_ids: pending_ownership_site_ids
                                } ->
-        Plausible.Teams.Billing.quota_usage(my_team,
+        Plausible.Teams.Billing.quota_usage(current_team,
           with_features: true,
           pending_ownership_site_ids: pending_ownership_site_ids
         )
       end)
-      |> assign_new(:subscription, fn %{my_team: my_team} ->
-        Plausible.Teams.Billing.get_subscription(my_team)
+      |> assign_new(:subscription, fn %{current_team: current_team} ->
+        Plausible.Teams.Billing.get_subscription(current_team)
       end)
       |> assign_new(:owned_plan, fn %{subscription: subscription} ->
         Plans.get_regular_plan(subscription, only_non_expired: true)
@@ -82,8 +82,27 @@ defmodule PlausibleWeb.Live.ChoosePlan do
     business_plan_to_render =
       assigns.selected_business_plan || List.last(assigns.available_plans.business)
 
-    growth_benefits = PlanBenefits.for_growth(growth_plan_to_render)
-    business_benefits = PlanBenefits.for_business(business_plan_to_render, growth_benefits)
+    saved_segments_enabled? =
+      FunWithFlags.enabled?(:saved_segments_fe, for: assigns.current_user) and
+        FunWithFlags.enabled?(:saved_segments, for: assigns.current_user)
+
+    growth_benefits =
+      PlanBenefits.for_growth(growth_plan_to_render) ++
+        if(saved_segments_enabled?, do: ["Segments"], else: [])
+
+    business_benefits =
+      PlanBenefits.for_business(
+        if(saved_segments_enabled?,
+          do: business_plan_to_render,
+          else:
+            struct!(business_plan_to_render,
+              features:
+                business_plan_to_render.features -- [Plausible.Billing.Feature.SiteSegments]
+            )
+        ),
+        growth_benefits
+      )
+
     enterprise_benefits = PlanBenefits.for_enterprise(business_benefits)
 
     assigns =

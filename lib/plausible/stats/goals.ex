@@ -104,6 +104,20 @@ defmodule Plausible.Stats.Goals do
     }
   end
 
+  def toplevel_scroll_goal_filters?(query) do
+    goal_filters? =
+      Enum.any?(query.filters, fn
+        [_, "event:goal", _] -> true
+        _ -> false
+      end)
+
+    any_scroll_goals_preloaded? =
+      query.preloaded_goals.matching_toplevel_filters
+      |> Enum.any?(fn goal -> Plausible.Goal.type(goal) == :scroll end)
+
+    goal_filters? and any_scroll_goals_preloaded?
+  end
+
   defp filter_preloaded(goals, filter, clause) do
     Enum.filter(goals, fn goal -> matches?(goal, filter, clause) end)
   end
@@ -154,10 +168,14 @@ defmodule Plausible.Stats.Goals do
       if is_nil(goal) do
         dynamic([e], ^dynamic_statement)
       else
-        type = Plausible.Goal.type(goal)
-        dynamic([e], ^goal_condition(type, goal, imported?) or ^dynamic_statement)
+        dynamic([e], ^goal_condition(goal, imported?) or ^dynamic_statement)
       end
     end)
+  end
+
+  def goal_condition(goal, imported? \\ false) do
+    type = Plausible.Goal.type(goal)
+    goal_condition(type, goal, imported?)
   end
 
   defp goal_condition(:event, goal, _) do

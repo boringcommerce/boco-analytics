@@ -21,7 +21,6 @@ defmodule Plausible.Site do
     field :conversions_enabled, :boolean, default: true
     field :props_enabled, :boolean, default: true
     field :funnels_enabled, :boolean, default: true
-    field :scroll_depth_visible_at, :naive_datetime
 
     field :ingest_rate_limit_scale_seconds, :integer, default: 60
     # default is set via changeset/2
@@ -47,8 +46,8 @@ defmodule Plausible.Site do
     has_one :google_auth, GoogleAuth
     has_one :weekly_report, Plausible.Site.WeeklyReport
     has_one :monthly_report, Plausible.Site.MonthlyReport
-    has_one :ownership, through: [:team, :ownership]
-    has_one :owner, through: [:team, :owner]
+    has_many :ownerships, through: [:team, :ownerships], preload_order: [asc: :id]
+    has_many :owners, through: [:team, :owners]
 
     # If `from_cache?` is set, the struct might be incomplete - see `Plausible.Site.Cache`.
     # Use `Plausible.Repo.reload!(cached_site)` to pre-fill missing fields if

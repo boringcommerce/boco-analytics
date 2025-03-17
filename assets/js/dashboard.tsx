@@ -20,6 +20,10 @@ import {
   GoToSites,
   SomethingWentWrongMessage
 } from './dashboard/error/something-went-wrong'
+import {
+  parsePreloadedSegments,
+  SegmentsContextProvider
+} from './dashboard/filtering/segments-context'
 
 timer.start()
 
@@ -57,10 +61,25 @@ if (container && container.dataset) {
         <ThemeContextProvider>
           <SiteContextProvider site={site}>
             <UserContextProvider
-              role={container.dataset.currentUserRole as Role}
-              loggedIn={container.dataset.loggedIn === 'true'}
+              user={
+                container.dataset.loggedIn === 'true'
+                  ? {
+                      loggedIn: true,
+                      id: parseInt(container.dataset.currentUserId!, 10),
+                      role: container.dataset.currentUserRole as Role
+                    }
+                  : {
+                      loggedIn: false,
+                      id: null,
+                      role: container.dataset.currentUserRole as Role
+                    }
+              }
             >
-              <RouterProvider router={router} />
+              <SegmentsContextProvider
+                preloadedSegments={parsePreloadedSegments(container.dataset)}
+              >
+                <RouterProvider router={router} />
+              </SegmentsContextProvider>
             </UserContextProvider>
           </SiteContextProvider>
         </ThemeContextProvider>

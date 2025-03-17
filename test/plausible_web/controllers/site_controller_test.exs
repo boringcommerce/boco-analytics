@@ -256,6 +256,22 @@ defmodule PlausibleWeb.SiteControllerTest do
       assert html_response(conn, 200) =~ "can&#39;t be blank"
     end
 
+    test "fails to create site when not allowed to in selected team", %{conn: conn, user: user} do
+      site = new_site()
+      add_member(site.team, user: user, role: :viewer)
+      conn = set_current_team(conn, site.team)
+
+      conn =
+        post(conn, "/sites", %{
+          "site" => %{
+            "domain" => "example.com",
+            "timezone" => "Europe/London"
+          }
+        })
+
+      assert html_response(conn, 200) =~ "You are not permitted to add sites in the current team"
+    end
+
     test "starts trial if user does not have trial yet", %{conn: conn, user: user} do
       refute team_of(user)
 
@@ -576,7 +592,9 @@ defmodule PlausibleWeb.SiteControllerTest do
       refute resp =~ "You can also invite people to your team"
       refute resp =~ "Team members automatically have access to this site."
 
-      user |> team_of() |> Teams.Team.setup_changeset() |> Repo.update!()
+      team = team_of(user)
+      Teams.complete_setup(team)
+      conn = set_current_team(conn, team)
 
       resp = conn |> get("/#{site.domain}/settings/people") |> html_response(200)
       assert resp =~ "You can also invite people to your team"

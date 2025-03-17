@@ -100,10 +100,11 @@ defmodule PlausibleWeb.Router do
   on_ee do
     scope "/crm", PlausibleWeb do
       pipe_through :flags
-      get "/auth/user/:user_id/usage", AdminController, :usage
-      get "/billing/user/:user_id/current_plan", AdminController, :current_plan
-      get "/billing/search/user-by-id/:user_id", AdminController, :user_by_id
-      post "/billing/search/user", AdminController, :user_search
+      get "/teams/team/:team_id/usage", AdminController, :usage
+      get "/auth/user/:user_id/info", AdminController, :user_info
+      get "/billing/team/:team_id/current_plan", AdminController, :current_plan
+      get "/billing/search/team-by-id/:team_id", AdminController, :team_by_id
+      post "/billing/search/team", AdminController, :team_search
     end
   end
 
@@ -220,13 +221,7 @@ defmodule PlausibleWeb.Router do
     end
 
     scope "/:domain/segments", PlausibleWeb.Api.Internal do
-      pipeline :segments_endpoints,
-        do: plug(PlausibleWeb.Plugs.FeatureFlagCheckPlug, [:saved_segments])
-
-      pipe_through :segments_endpoints
-      get "/", SegmentsController, :index
       post "/", SegmentsController, :create
-      get "/:segment_id", SegmentsController, :get
       patch "/:segment_id", SegmentsController, :update
       delete "/:segment_id", SegmentsController, :delete
     end
@@ -294,8 +289,14 @@ defmodule PlausibleWeb.Router do
 
       post "/event", Api.ExternalController, :event
       get "/error", Api.ExternalController, :error
-      get "/health", Api.ExternalController, :health
-      get "/system", Api.ExternalController, :info
+      # Remove this once all external checks are migration to new /system/health/* checks
+      get "/health", Api.SystemController, :readiness
+    end
+
+    scope "/system" do
+      get "/", Api.SystemController, :info
+      get "/health/live", Api.SystemController, :liveness
+      get "/health/ready", Api.SystemController, :readiness
     end
 
     scope [] do
@@ -399,6 +400,8 @@ defmodule PlausibleWeb.Router do
 
     get "/logout", AuthController, :logout
     delete "/me", AuthController, :delete_me
+
+    get "/team/select", AuthController, :select_team
 
     get "/auth/google/callback", AuthController, :google_auth_callback
 

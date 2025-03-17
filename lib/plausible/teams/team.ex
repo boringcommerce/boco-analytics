@@ -29,6 +29,9 @@ defmodule Plausible.Teams.Team do
     field :setup_complete, :boolean, default: false
     field :setup_at, :naive_datetime
 
+    # Field for purely informational purposes in CRM context
+    field :notes, :string
+
     embeds_one :grace_period, Plausible.Teams.GracePeriod, on_replace: :update
 
     has_many :sites, Plausible.Site
@@ -37,20 +40,34 @@ defmodule Plausible.Teams.Team do
     has_one :subscription, Plausible.Billing.Subscription
     has_one :enterprise_plan, Plausible.Billing.EnterprisePlan
 
-    has_one :ownership, Plausible.Teams.Membership, where: [role: :owner]
-    has_one :owner, through: [:ownership, :user]
+    has_many :ownerships, Plausible.Teams.Membership,
+      where: [role: :owner],
+      preload_order: [asc: :id]
+
+    has_many :billing_memberships, Plausible.Teams.Membership,
+      where: [role: :billing],
+      preload_order: [asc: :id]
+
+    has_many :owners, through: [:ownerships, :user]
+    has_many :billing_members, through: [:billing_memberships, :user]
 
     timestamps()
   end
 
-  def crm_sync_changeset(team, params) do
+  def crm_changeset(team, params) do
     team
-    |> cast(params, [:trial_expiry_date, :allow_next_upgrade_override, :accept_traffic_until])
+    |> cast(params, [
+      :name,
+      :notes,
+      :trial_expiry_date,
+      :allow_next_upgrade_override,
+      :accept_traffic_until
+    ])
   end
 
-  def changeset(name, today \\ Date.utc_today()) do
-    %__MODULE__{}
-    |> cast(%{name: name}, [:name])
+  def changeset(team \\ %__MODULE__{}, attrs \\ %{}, today \\ Date.utc_today()) do
+    team
+    |> cast(attrs, [:name])
     |> validate_required(:name)
     |> start_trial(today)
     |> maybe_bump_accept_traffic_until()
@@ -61,11 +78,10 @@ defmodule Plausible.Teams.Team do
     team
     |> cast(attrs, [:name])
     |> validate_required(:name)
+    |> validate_exclusion(:name, [Plausible.Teams.default_name()])
   end
 
-  def setup_changeset(team) do
-    now = NaiveDateTime.utc_now(:second)
-
+  def setup_changeset(team, now \\ NaiveDateTime.utc_now(:second)) do
     team
     |> change(
       setup_complete: true,

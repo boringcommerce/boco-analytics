@@ -12,8 +12,36 @@ defmodule Plausible.Teams do
 
   @accept_traffic_until_free ~D[2135-01-01]
 
+  @spec default_name() :: String.t()
+  def default_name(), do: "My Personal Sites"
+
+  @spec name(nil | Teams.Team.t()) :: String.t()
+  def name(nil), do: default_name()
+  def name(%{setup_complete: false}), do: default_name()
+  def name(team), do: team.name
+
+  @spec setup?(nil | Teams.Team.t()) :: boolean()
+  def setup?(nil), do: false
+  def setup?(%{setup_complete: setup_complete}), do: setup_complete
+
+  @spec enabled?(nil | Teams.Team.t()) :: boolean()
+  def enabled?(nil) do
+    FunWithFlags.enabled?(:teams)
+  end
+
   def enabled?(team) do
-    not is_nil(team) and FunWithFlags.enabled?(:teams, for: team)
+    FunWithFlags.enabled?(:teams, for: team)
+  end
+
+  @spec get(pos_integer() | binary() | nil) :: Teams.Team.t() | nil
+  def get(nil), do: nil
+
+  def get(team_id) when is_integer(team_id) do
+    Repo.get(Teams.Team, team_id)
+  end
+
+  def get(team_identifier) when is_binary(team_identifier) do
+    Repo.get_by(Teams.Team, identifier: team_identifier)
   end
 
   @spec get!(pos_integer() | binary()) :: Teams.Team.t()
@@ -23,15 +51,6 @@ defmodule Plausible.Teams do
 
   def get!(team_identifier) when is_binary(team_identifier) do
     Repo.get_by!(Teams.Team, identifier: team_identifier)
-  end
-
-  @spec get_owner(Teams.Team.t()) ::
-          {:ok, Auth.User.t()} | {:error, :no_owner | :multiple_owners}
-  def get_owner(team) do
-    case Repo.preload(team, :owner).owner do
-      nil -> {:error, :no_owner}
-      owner_user -> {:ok, owner_user}
-    end
   end
 
   @spec on_trial?(Teams.Team.t() | nil) :: boolean()
@@ -111,30 +130,9 @@ defmodule Plausible.Teams do
   end
 
   @doc """
-  Create (when necessary) and load team relation for provided site.
-
-  Used for sync logic to work smoothly during transitional period.
-  """
-  def load_for_site(site) do
-    site = Repo.preload(site, [:team, :owner])
-
-    if site.team do
-      site
-    else
-      {:ok, team} = get_or_create(site.owner)
-
-      site
-      |> Ecto.Changeset.change()
-      |> Ecto.Changeset.put_assoc(:team, team)
-      |> Ecto.Changeset.force_change(:updated_at, site.updated_at)
-      |> Repo.update!()
-    end
-  end
-
-  @doc """
   Get or create user's team.
 
-  If the user has no non-guest membership yet, an implicit "My Team" team is
+  If the user has no non-guest membership yet, an implicit "My Personal Sites" team is
   created with them as an owner.
 
   If the user already has an owner membership in an existing team,
@@ -145,43 +143,52 @@ defmodule Plausible.Teams do
   """
   @spec get_or_create(Auth.User.t()) :: {:ok, Teams.Team.t()} | {:error, :multiple_teams}
   def get_or_create(user) do
-    with {:error, :no_team} <- get_by_owner(user) do
+    with {:error, :no_team} <- get_owned_team(user, only_not_setup?: true) do
       case create_my_team(user) do
         {:ok, team} ->
           {:ok, team}
 
         {:error, :exists_already} ->
-          get_by_owner(user)
+          get_owned_team(user, only_not_setup?: true)
       end
     end
   end
 
-  @spec get_by_owner(Auth.User.t() | pos_integer()) ::
-          {:ok, Teams.Team.t()} | {:error, :no_team | :multiple_teams}
-  def get_by_owner(user_id) when is_integer(user_id) do
-    result =
-      from(tm in Teams.Membership,
-        inner_join: t in assoc(tm, :team),
-        where: tm.user_id == ^user_id and tm.role == :owner,
-        select: t,
-        order_by: t.id
-      )
-      |> Repo.all()
+  @spec force_create_my_team(Auth.User.t()) :: Teams.Team.t()
+  def force_create_my_team(user) do
+    {:ok, team} =
+      Repo.transaction(fn ->
+        clear_autocreated(user)
+        {:ok, team} = create_my_team(user)
+        team
+      end)
 
-    case result do
-      [] ->
-        {:error, :no_team}
+    team
+  end
 
-      [team] ->
-        {:ok, team}
+  @spec complete_setup(Teams.Team.t()) :: Teams.Team.t()
+  def complete_setup(team) do
+    if not team.setup_complete do
+      team =
+        team
+        |> Teams.Team.setup_changeset()
+        |> Repo.update!()
+        |> Repo.preload(:owners)
 
-      _teams ->
-        {:error, :multiple_teams}
+      [owner] = team.owners
+
+      clear_autocreated(owner)
+
+      team
+    else
+      team
     end
   end
 
-  def get_by_owner(%Auth.User{} = user) do
-    get_by_owner(user.id)
+  @spec get_by_owner(Auth.User.t()) ::
+          {:ok, Teams.Team.t()} | {:error, :no_team | :multiple_teams}
+  def get_by_owner(user) do
+    get_owned_team(user)
   end
 
   @spec update_accept_traffic_until(Teams.Team.t()) :: Teams.Team.t()
@@ -273,43 +280,55 @@ defmodule Plausible.Teams do
     )
   end
 
-  def setup_team(team, candidates) do
-    inviter = Repo.preload(team, :owner).owner
+  defp get_owned_team(user, opts \\ []) do
+    only_not_setup? = Keyword.get(opts, :only_not_setup?, false)
 
-    setup_team_fn = fn {{email, _name}, role} ->
-      case Teams.Invitations.InviteToTeam.invite(team, inviter, email, role, send_email?: false) do
-        {:ok, invitation} -> invitation
-        {:error, error} -> Repo.rollback(error)
+    query =
+      from(tm in Teams.Membership,
+        inner_join: t in assoc(tm, :team),
+        as: :team,
+        where: tm.user_id == ^user.id and tm.role == :owner,
+        select: t,
+        order_by: t.id
+      )
+
+    query =
+      if only_not_setup? do
+        where(query, [team: t], t.setup_complete == false)
+      else
+        query
       end
-    end
 
-    result =
-      Repo.transaction(fn ->
-        team
-        |> Teams.Team.setup_changeset()
-        |> Repo.update!()
-
-        Enum.map(candidates, setup_team_fn)
-      end)
+    result = Repo.all(query)
 
     case result do
-      {:ok, invitations} ->
-        Enum.each(invitations, fn invitation ->
-          invitee = Auth.find_user_by(email: invitation.email)
-          Teams.Invitations.InviteToTeam.send_invitation_email(invitation, invitee)
-        end)
+      [] ->
+        {:error, :no_team}
 
-        {:ok, invitations}
+      [team] ->
+        {:ok, team}
 
-      {:error, {:over_limit, _}} = error ->
-        error
+      _teams ->
+        {:error, :multiple_teams}
     end
+  end
+
+  defp clear_autocreated(user) do
+    Repo.update_all(
+      from(tm in Teams.Membership,
+        where: tm.user_id == ^user.id,
+        where: tm.is_autocreated == true
+      ),
+      set: [is_autocreated: false]
+    )
+
+    :ok
   end
 
   defp create_my_team(user) do
     team =
-      "My Team"
-      |> Teams.Team.changeset()
+      %Teams.Team{}
+      |> Teams.Team.changeset(%{name: default_name()})
       |> Ecto.Changeset.put_change(:inserted_at, user.inserted_at)
       |> Ecto.Changeset.put_change(:updated_at, user.updated_at)
       |> Repo.insert!()

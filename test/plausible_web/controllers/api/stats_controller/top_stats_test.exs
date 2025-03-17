@@ -482,9 +482,28 @@ defmodule PlausibleWeb.Api.StatsController.TopStatsTest do
       :create_user,
       :log_in,
       :create_site,
-      :create_legacy_site_import,
-      :set_scroll_depth_visible_at
+      :create_legacy_site_import
     ]
+
+    test "puts scroll depth warning code", %{conn: conn, site: site} do
+      filters = Jason.encode!([[:is, "event:page", ["/"]]])
+
+      conn =
+        get(
+          conn,
+          "/api/stats/#{site.domain}/top-stats?period=day&date=2021-01-01&filters=#{filters}&with_imported=true"
+        )
+
+      %{"top_stats" => top_stats, "meta" => meta} = json_response(conn, 200)
+
+      assert meta["metric_warnings"]["scroll_depth"]["code"] == "no_imported_scroll_depth"
+
+      assert %{
+               "graph_metric" => "scroll_depth",
+               "name" => "Scroll depth",
+               "value" => nil
+             } in top_stats
+    end
 
     test "returns divisible metrics as 0 when no stats exist", %{
       site: site,
@@ -613,7 +632,10 @@ defmodule PlausibleWeb.Api.StatsController.TopStatsTest do
       conn: conn,
       site: site
     } do
-      populate_stats(site, [
+      site_import =
+        insert(:site_import, site: site, start_date: ~D[2021-01-01], has_scroll_depth: true)
+
+      populate_stats(site, site_import.id, [
         build(:pageview,
           pathname: "/",
           user_id: @user_id,
@@ -894,7 +916,7 @@ defmodule PlausibleWeb.Api.StatsController.TopStatsTest do
   end
 
   describe "GET /api/stats/top-stats - filters" do
-    setup [:create_user, :log_in, :create_site, :set_scroll_depth_visible_at]
+    setup [:create_user, :log_in, :create_site]
 
     test "returns graph_metric key for top stats with a page filter", %{
       conn: conn,
@@ -996,7 +1018,8 @@ defmodule PlausibleWeb.Api.StatsController.TopStatsTest do
     end
 
     test "returns scroll_depth with a page filter with imported data", %{conn: conn, site: site} do
-      site_import = insert(:site_import, site: site)
+      site_import =
+        insert(:site_import, site: site, start_date: ~D[2021-01-01], has_scroll_depth: true)
 
       populate_stats(site, site_import.id, [
         build(:pageview, user_id: 123, timestamp: ~N[2021-01-01 00:00:00]),
@@ -1009,10 +1032,10 @@ defmodule PlausibleWeb.Api.StatsController.TopStatsTest do
           page: "/",
           date: ~D[2021-01-01],
           visitors: 8,
-          scroll_depth: 410,
-          pageleave_visitors: 8
+          total_scroll_depth: 410,
+          total_scroll_depth_visits: 8
         ),
-        build(:imported_pages, page: "/", date: ~D[2021-01-02], visitors: 100, scroll_depth: nil)
+        build(:imported_pages, page: "/", date: ~D[2021-01-02], visitors: 100)
       ])
 
       filters = Jason.encode!([[:is, "event:page", ["/"]]])
@@ -1023,11 +1046,17 @@ defmodule PlausibleWeb.Api.StatsController.TopStatsTest do
           "/api/stats/#{site.domain}/top-stats?period=7d&date=2021-01-07&filters=#{filters}&with_imported=true"
         )
 
-      res = json_response(conn, 200)
+      scroll_depth_stat =
+        conn
+        |> json_response(200)
+        |> Map.get("top_stats")
+        |> Enum.find(&(&1["name"] == "Scroll depth"))
 
-      assert %{"name" => "Scroll depth", "value" => 55, "graph_metric" => "scroll_depth"} in res[
-               "top_stats"
-             ]
+      assert scroll_depth_stat == %{
+               "name" => "Scroll depth",
+               "value" => 55,
+               "graph_metric" => "scroll_depth"
+             }
     end
 
     test "contains filter", %{conn: conn, site: site} do
@@ -1306,29 +1335,6 @@ defmodule PlausibleWeb.Api.StatsController.TopStatsTest do
       assert %{"name" => "Total pageviews", "value" => 4, "graph_metric" => "pageviews"} in res[
                "top_stats"
              ]
-    end
-
-    test "does not return scroll depth when site.scroll_depth_visible_at=nil", %{
-      conn: conn,
-      user: user
-    } do
-      site = new_site(owner: user)
-
-      filters = Jason.encode!([[:is, "event:page", ["/"]]])
-
-      top_stats =
-        conn
-        |> get("/api/stats/#{site.domain}/top-stats?filters=#{filters}")
-        |> json_response(200)
-        |> Map.get("top_stats")
-
-      assert [
-               %{"name" => "Unique visitors"},
-               %{"name" => "Total visits"},
-               %{"name" => "Total pageviews"},
-               %{"name" => "Bounce rate"},
-               %{"name" => "Time on page"}
-             ] = top_stats
     end
   end
 
@@ -1770,7 +1776,7 @@ defmodule PlausibleWeb.Api.StatsController.TopStatsTest do
       assert [unique_conversions, total_conversions, conversion_rate] = top_stats
 
       assert %{"name" => "Unique conversions", "value" => 1} = unique_conversions
-      assert %{"name" => "Total conversions", "value" => 0} = total_conversions
+      assert %{"name" => "Total conversions", "value" => nil} = total_conversions
       assert %{"name" => "Conversion rate", "value" => 50.0} = conversion_rate
     end
 
@@ -1817,7 +1823,7 @@ defmodule PlausibleWeb.Api.StatsController.TopStatsTest do
       assert [unique_conversions, total_conversions, conversion_rate] = top_stats
 
       assert %{"name" => "Unique conversions", "value" => 3} = unique_conversions
-      assert %{"name" => "Total conversions", "value" => 2} = total_conversions
+      assert %{"name" => "Total conversions", "value" => nil} = total_conversions
       assert %{"name" => "Conversion rate", "value" => 60.0} = conversion_rate
     end
 
@@ -1856,7 +1862,7 @@ defmodule PlausibleWeb.Api.StatsController.TopStatsTest do
       assert [unique_conversions, total_conversions, conversion_rate] = top_stats
 
       assert %{"name" => "Unique conversions", "value" => 2} = unique_conversions
-      assert %{"name" => "Total conversions", "value" => 2} = total_conversions
+      assert %{"name" => "Total conversions", "value" => nil} = total_conversions
       assert %{"name" => "Conversion rate", "value" => 66.7} = conversion_rate
     end
   end

@@ -53,7 +53,8 @@ defmodule Plausible.Stats.Filters.QueryParserTest do
     imports_meta: false,
     time_labels: false,
     total_rows: false,
-    comparisons: nil
+    comparisons: nil,
+    legacy_time_on_page_cutoff: nil
   }
 
   def check_success(params, site, expected_result, schema_type \\ :public) do
@@ -875,7 +876,8 @@ defmodule Plausible.Stats.Filters.QueryParserTest do
           imports_meta: false,
           time_labels: true,
           total_rows: true,
-          comparisons: nil
+          comparisons: nil,
+          legacy_time_on_page_cutoff: nil
         },
         pagination: %{limit: 10_000, offset: 0}
       })
@@ -939,7 +941,8 @@ defmodule Plausible.Stats.Filters.QueryParserTest do
             imports: false,
             imports_meta: false,
             time_labels: false,
-            total_rows: false
+            total_rows: false,
+            legacy_time_on_page_cutoff: nil
           },
           pagination: %{limit: 10_000, offset: 0}
         },
@@ -970,7 +973,8 @@ defmodule Plausible.Stats.Filters.QueryParserTest do
             imports: false,
             imports_meta: false,
             time_labels: false,
-            total_rows: false
+            total_rows: false,
+            legacy_time_on_page_cutoff: nil
           },
           pagination: %{limit: 10_000, offset: 0}
         },
@@ -1004,7 +1008,8 @@ defmodule Plausible.Stats.Filters.QueryParserTest do
             imports_meta: false,
             imports: false,
             time_labels: false,
-            total_rows: false
+            total_rows: false,
+            legacy_time_on_page_cutoff: nil
           },
           pagination: %{limit: 10_000, offset: 0}
         },
@@ -1137,7 +1142,7 @@ defmodule Plausible.Stats.Filters.QueryParserTest do
       }
       |> check_error(
         site,
-        "The goal `Signup` is not configured for this site. Find out how to configure goals here: https://plausible.io/docs/stats-api#filtering-by-goals"
+        "Invalid filters. The goal `Signup` is not configured for this site. Find out how to configure goals here: https://plausible.io/docs/stats-api#filtering-by-goals"
       )
     end
 
@@ -1152,7 +1157,7 @@ defmodule Plausible.Stats.Filters.QueryParserTest do
       }
       |> check_error(
         site,
-        "The goal `Visit /thank-you` is not configured for this site. Find out how to configure goals here: https://plausible.io/docs/stats-api#filtering-by-goals"
+        "Invalid filters. The goal `Visit /thank-you` is not configured for this site. Find out how to configure goals here: https://plausible.io/docs/stats-api#filtering-by-goals"
       )
     end
 
@@ -1255,7 +1260,7 @@ defmodule Plausible.Stats.Filters.QueryParserTest do
       }
       |> check_error(
         site,
-        "The goal `Unknown` is not configured for this site. Find out how to configure goals here: https://plausible.io/docs/stats-api#filtering-by-goals",
+        "Invalid filters. The goal `Unknown` is not configured for this site. Find out how to configure goals here: https://plausible.io/docs/stats-api#filtering-by-goals",
         :internal
       )
     end
@@ -2283,8 +2288,7 @@ defmodule Plausible.Stats.Filters.QueryParserTest do
       }
       |> check_error(
         site,
-        "Invalid filters. You can only use up to 10 segment filters in a query.",
-        :internal
+        "Invalid filters. You can only use up to 10 segment filters in a query."
       )
     end
 
@@ -2310,8 +2314,7 @@ defmodule Plausible.Stats.Filters.QueryParserTest do
       }
       |> check_error(
         site,
-        "Invalid filters. Some segments don't exist or aren't accessible.",
-        :internal
+        "Invalid filters. Some segments don't exist or aren't accessible."
       )
     end
 
@@ -2339,8 +2342,7 @@ defmodule Plausible.Stats.Filters.QueryParserTest do
       }
       |> check_error(
         site,
-        "The owner of this site does not have access to the custom properties feature.",
-        :internal
+        "The owner of this site does not have access to the custom properties feature."
       )
     end
 
@@ -2376,8 +2378,7 @@ defmodule Plausible.Stats.Filters.QueryParserTest do
       }
       |> check_error(
         site,
-        "Invalid filters. Dimension `event:goal` can only be filtered at the top level.",
-        :internal
+        "Invalid filters. Dimension `event:goal` can only be filtered at the top level."
       )
     end
 
@@ -2441,22 +2442,17 @@ defmodule Plausible.Stats.Filters.QueryParserTest do
           utc_time_range: @date_range_day,
           filters: [
             [
+              :or,
+              [
+                [:and, [[:is, "visit:country", ["AU", "NZ"]]]],
+                [:and, [[:is, "visit:country", ["FR", "DE"]]]]
+              ]
+            ],
+            [
               :and,
               [
-                [
-                  :or,
-                  [
-                    [:and, [[:is, "visit:country", ["AU", "NZ"]]]],
-                    [:and, [[:is, "visit:country", ["FR", "DE"]]]]
-                  ]
-                ],
-                [
-                  :and,
-                  [
-                    [:is, "visit:browser", ["Firefox"]],
-                    [:is, "visit:os", ["Linux"]]
-                  ]
-                ]
+                [:is, "visit:browser", ["Firefox"]],
+                [:is, "visit:os", ["Linux"]]
               ]
             ]
           ],
@@ -2465,8 +2461,46 @@ defmodule Plausible.Stats.Filters.QueryParserTest do
           timezone: site.timezone,
           include: @default_include,
           pagination: %{limit: 10_000, offset: 0}
-        },
-        :internal
+        }
+      )
+    end
+
+    test "resolves segments containing otherwise internal features", %{site: site, user: user} do
+      insert(:goal, %{site: site, event_name: "Signup"})
+
+      segment_from_dashboard =
+        insert(:segment,
+          name: "A segment that contains :internal features",
+          type: :site,
+          owner: user,
+          site: site,
+          segment_data: %{
+            "filters" => [["has_not_done", ["is", "event:goal", ["Signup"]]]]
+          }
+        )
+
+      %{
+        "site_id" => site.domain,
+        "metrics" => ["visitors", "events"],
+        "date_range" => "all",
+        "filters" => [
+          ["is", "segment", [segment_from_dashboard.id]]
+        ]
+      }
+      |> check_success(
+        site,
+        %{
+          metrics: [:visitors, :events],
+          utc_time_range: @date_range_day,
+          filters: [
+            [:has_not_done, [:is, "event:goal", ["Signup"]]]
+          ],
+          dimensions: [],
+          order_by: nil,
+          timezone: site.timezone,
+          include: @default_include,
+          pagination: %{limit: 10_000, offset: 0}
+        }
       )
     end
   end

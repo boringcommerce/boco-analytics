@@ -42,6 +42,7 @@ defmodule Plausible.Ingestion.Request do
     field :pathname, :string
     field :props, :map
     field :scroll_depth, :integer
+    field :engagement_time, :integer
 
     on_ee do
       field :revenue_source, :map
@@ -79,6 +80,7 @@ defmodule Plausible.Ingestion.Request do
         |> put_referrer(request_body)
         |> put_props(request_body)
         |> put_scroll_depth(request_body)
+        |> put_engagement_time(request_body)
         |> put_pathname()
         |> put_query_params()
         |> put_revenue_source(request_body)
@@ -250,15 +252,19 @@ defmodule Plausible.Ingestion.Request do
   end
 
   defp put_scroll_depth(changeset, %{} = request_body) do
-    if Changeset.get_field(changeset, :event_name) in ["pageleave", "engagement"] do
-      scroll_depth =
-        case request_body["sd"] do
-          sd when is_integer(sd) and sd >= 0 and sd <= 100 -> sd
-          sd when is_integer(sd) and sd > 100 -> 100
-          _ -> 255
-        end
-
+    if Changeset.get_field(changeset, :event_name) == "engagement" do
+      scroll_depth = parse_scroll_depth(request_body["sd"])
       Changeset.put_change(changeset, :scroll_depth, scroll_depth)
+    else
+      changeset
+    end
+  end
+
+  defp put_engagement_time(changeset, %{} = request_body) do
+    if Changeset.get_field(changeset, :event_name) == "engagement" do
+      engagement_time = parse_engagement_time(request_body["e"])
+
+      Changeset.put_change(changeset, :engagement_time, engagement_time)
     else
       changeset
     end
@@ -323,6 +329,38 @@ defmodule Plausible.Ingestion.Request do
   def sanitize_hostname(nil) do
     nil
   end
+
+  @missing_scroll_depth 255
+
+  defp parse_scroll_depth(sd) when is_binary(sd) do
+    case Integer.parse(sd) do
+      {sd_int, ""} -> parse_scroll_depth(sd_int)
+      _ -> @missing_scroll_depth
+    end
+  end
+
+  defp parse_scroll_depth(sd) when is_integer(sd) and sd >= 0 and sd <= 100, do: sd
+  defp parse_scroll_depth(sd) when is_integer(sd) and sd > 100, do: 100
+  defp parse_scroll_depth(_), do: @missing_scroll_depth
+
+  @missing_engagement_time 0
+
+  defp parse_engagement_time(et) when is_binary(et) do
+    case Integer.parse(et) do
+      {et_int, ""} -> parse_engagement_time(et_int)
+      _ -> @missing_engagement_time
+    end
+  end
+
+  # :KLUDGE: Old version of tracker script sent huge values for engagement time. Ignore
+  # these while users might still have the old script cached.
+  @too_large_engagement_time :timer.hours(30 * 24)
+
+  defp parse_engagement_time(et)
+       when is_integer(et) and et >= 0 and et < @too_large_engagement_time,
+       do: et
+
+  defp parse_engagement_time(_), do: @missing_engagement_time
 end
 
 defimpl Jason.Encoder, for: URI do

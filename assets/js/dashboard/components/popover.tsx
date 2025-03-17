@@ -29,7 +29,7 @@ const toggleButton = {
     shadow:
       'bg-white dark:bg-gray-800 shadow text-gray-800 dark:text-gray-200 hover:bg-gray-200 dark:hover:bg-gray-900',
     ghost:
-      'text-gray-500 hover:text-gray-800 hover:bg-gray-200 dark:hover:text-gray-200 dark:hover:bg-gray-900',
+      'text-gray-700 dark:text-gray-100 hover:bg-gray-200 dark:hover:bg-gray-900',
     truncatedText: 'truncate block font-medium'
   }
 }
@@ -55,6 +55,10 @@ const items = {
     roundedStartEnd: classNames(
       'first-of-type:rounded-t-md',
       'last-of-type:rounded-b-md'
+    ),
+    groupRoundedStartEnd: classNames(
+      'group-first-of-type:rounded-t-md',
+      'group-last-of-type:rounded-b-md'
     )
   }
 }

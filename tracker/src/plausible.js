@@ -16,11 +16,9 @@
     if (reason) console.warn('Ignoring Event: ' + reason);
     options && options.callback && options.callback()
 
-    {{#if pageleave}}
     if (eventName === 'pageview') {
       currentEngagementIgnored = true
     }
-    {{/if}}
   }
 
   function defaultEndpoint(el) {
@@ -34,9 +32,6 @@
     {{/if}}
   }
 
-  {{#if pageleave}}
-  // :NOTE: Tracking engagement events is currently experimental.
-
   var currentEngagementIgnored
   var currentEngagementURL = location.href
   var currentEngagementProps = {}
@@ -47,12 +42,18 @@
   // prevents registering multiple listeners in those cases.
   var listeningOnEngagement = false
 
-  // In SPA-s, multiple listeners that trigger the pageleave event
+  // In SPA-s, multiple listeners that trigger the engagement event
   // might fire nearly at the same time. E.g. when navigating back
   // in browser history while using hash-based routing - a popstate
   // and hashchange will be fired in a very quick succession. This
   // flag prevents sending multiple engagement events in those cases.
   var engagementCooldown = false
+
+  // Timestamp indicating when this particular page last became visible.
+  // Reset during pageviews, set to null when page is closed.
+  var runningEngagementStart = null
+  // When page is hidden, this 'engaged' time is saved to this variable
+  var currentEngagementTime = 0
 
   function getDocumentHeight() {
     var body = document.body || {}
@@ -68,10 +69,20 @@
   }
 
   function getCurrentScrollDepthPx() {
-    var viewportHeight = window.innerHeight || document.documentElement.clientHeight || 0
-    var scrollTop = window.scrollY || document.documentElement.scrollTop || document.body.scrollTop || 0
+    var body = document.body || {}
+    var el = document.documentElement || {}
+    var viewportHeight = window.innerHeight || el.clientHeight || 0
+    var scrollTop = window.scrollY || el.scrollTop || body.scrollTop || 0
 
     return currentDocumentHeight <= viewportHeight ? currentDocumentHeight : scrollTop + viewportHeight
+  }
+
+  function getEngagementTime() {
+    if (runningEngagementStart) {
+      return currentEngagementTime + (Date.now() - runningEngagementStart)
+    } else {
+      return currentEngagementTime
+    }
   }
 
   var currentDocumentHeight = getDocumentHeight()
@@ -101,10 +112,20 @@
   })
 
   function triggerEngagement() {
-    // Avoid sending redundant engagement events if user has not scrolled the page
-    // Note that `currentEngagementMaxScrollDepth` default of -1 ensures that at least one
-    // engagement event is sent
-    if (!engagementCooldown && !currentEngagementIgnored && currentEngagementMaxScrollDepth < maxScrollDepthPx) {
+    var engagementTime = getEngagementTime()
+
+    /*
+    We send engagements if there's new relevant engagement information to share:
+    - If the user has scrolled more than the previously sent max scroll depth.
+    - If the user has been engaged for more than 3 seconds since the last engagement event.
+
+    The first engagement event is always sent due to containing at least the initial scroll depth.
+
+    We don't send engagements if:
+    - Less than 300ms have passed since the last engagement event
+    - The current pageview is ignored (onIgnoredEvent)
+    */
+    if (!engagementCooldown && !currentEngagementIgnored && (currentEngagementMaxScrollDepth < maxScrollDepthPx || engagementTime >= 3000)) {
       currentEngagementMaxScrollDepth = maxScrollDepthPx
       setTimeout(function () {engagementCooldown = false}, 300)
 
@@ -113,8 +134,13 @@
         sd: Math.round((maxScrollDepthPx / currentDocumentHeight) * 100),
         d: dataDomain,
         u: currentEngagementURL,
-        p: currentEngagementProps
+        p: currentEngagementProps,
+        e: engagementTime
       }
+
+      // Reset current engagement time metrics. They will restart upon when page becomes visible or the next SPA pageview
+      runningEngagementStart = null
+      currentEngagementTime = 0
 
       {{#if hash}}
       payload.h = 1
@@ -129,13 +155,18 @@
       // Only register visibilitychange listener only after initial page load and pageview
       document.addEventListener('visibilitychange', function() {
         if (document.visibilityState === 'hidden') {
+          // Tab went back to background. Save the engaged time so far
+          currentEngagementTime = getEngagementTime()
+          runningEngagementStart = null
+
           triggerEngagement()
+        } else if (document.visibilityState === 'visible' && runningEngagementStart === null) {
+          runningEngagementStart = Date.now()
         }
       })
       listeningOnEngagement = true
     }
   }
-  {{/if}}
 
   function trigger(eventName, options) {
     var isPageview = eventName === 'pageview'
@@ -222,15 +253,15 @@
     payload.h = 1
     {{/if}}
 
-    {{#if pageleave}}
     if (isPageview) {
       currentEngagementIgnored = false
       currentEngagementURL = payload.u
       currentEngagementProps = payload.p
       currentEngagementMaxScrollDepth = -1
+      currentEngagementTime = 0
+      runningEngagementStart = Date.now()
       registerEngagementListener()
     }
-    {{/if}}
 
     sendRequest(endpoint, payload, options)
   }
@@ -275,16 +306,14 @@
 
     function page(isSPANavigation) {
       {{#unless hash}}
-      if (lastPage === location.pathname) return;
+      if (isSPANavigation && lastPage === location.pathname) return;
       {{/unless}}
 
-      {{#if pageleave}}
       if (isSPANavigation && listeningOnEngagement) {
         triggerEngagement()
         currentDocumentHeight = getDocumentHeight()
         maxScrollDepthPx = getCurrentScrollDepthPx()
       }
-      {{/if}}
 
       lastPage = location.pathname
       trigger('pageview')
@@ -318,14 +347,12 @@
       page()
     }
 
-    {{#if pageleave}}
     window.addEventListener('pageshow', function(event) {
       if (event.persisted) {
         // Page was restored from bfcache - trigger a pageview
         page();
       }
     })
-    {{/if}}
   {{/unless}}
 
   {{#if (any outbound_links file_downloads tagged_events)}}

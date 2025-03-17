@@ -610,6 +610,136 @@ defmodule PlausibleWeb.AuthControllerTest do
       assert Repo.get(Plausible.Site, viewer_site.id)
       refute Repo.get(Plausible.Site, owner_site.id)
     end
+
+    test "refuses to delete user when an only owner of a setup team", %{
+      conn: conn,
+      user: user,
+      site: site
+    } do
+      Plausible.Teams.complete_setup(site.team)
+
+      conn = delete(conn, "/me")
+
+      assert redirected_to(conn, 302) == Routes.settings_path(conn, :danger_zone)
+
+      assert Phoenix.Flash.get(conn.assigns.flash, :error) =~
+               "You can't delete your account when you are the only owner on a team"
+
+      assert Repo.reload(user)
+    end
+
+    test "refuses to delete user when an only owner of multiple setup teams", %{
+      conn: conn,
+      user: user,
+      site: site
+    } do
+      Plausible.Teams.complete_setup(site.team)
+
+      another_owner = new_user()
+      another_site = new_site(owner: another_owner)
+      add_member(another_site.team, user: user, role: :owner)
+      Repo.delete!(another_owner)
+
+      conn = delete(conn, "/me")
+
+      assert redirected_to(conn, 302) == Routes.settings_path(conn, :danger_zone)
+
+      assert Phoenix.Flash.get(conn.assigns.flash, :error) =~
+               "You can't delete your account when you are the only owner on a team"
+
+      assert Repo.reload(user)
+    end
+
+    test "context > team is autodeleted - personal segment is also deleted", %{
+      conn: conn,
+      user: user,
+      site: owner_site
+    } do
+      segment =
+        insert(:segment,
+          type: :personal,
+          owner: user,
+          site: owner_site,
+          name: "personal segment"
+        )
+
+      delete(conn, "/me")
+
+      refute Repo.reload(segment)
+    end
+
+    test "context > team is autodeleted - site segment is also deleted", %{
+      conn: conn,
+      user: user,
+      site: owner_site
+    } do
+      segment =
+        insert(:segment,
+          type: :site,
+          owner: user,
+          site: owner_site,
+          name: "site segment"
+        )
+
+      delete(conn, "/me")
+
+      refute Repo.reload(segment)
+    end
+
+    test "context > team is not autodeleted - personal segment is deleted", %{
+      conn: conn,
+      user: user
+    } do
+      another_owner = new_user()
+      another_site = new_site(owner: another_owner)
+      add_member(another_site.team, user: user, role: :admin)
+
+      segment =
+        insert(:segment,
+          type: :personal,
+          owner: user,
+          site: another_site,
+          name: "personal segment"
+        )
+
+      delete(conn, "/me")
+
+      refute Repo.reload(segment)
+    end
+
+    test "context > team is not autodeleted - site segment is kept with owner=null", %{
+      conn: conn,
+      user: user
+    } do
+      another_owner = new_user()
+      another_site = new_site(owner: another_owner)
+      add_member(another_site.team, user: user, role: :admin)
+
+      segment =
+        insert(:segment,
+          type: :site,
+          owner: user,
+          site: another_site,
+          name: "site segment"
+        )
+
+      delete(conn, "/me")
+
+      assert Repo.reload(segment).owner_id == nil
+    end
+
+    test "allows to delete user when not the only owner of a setup team", %{
+      conn: conn,
+      user: user
+    } do
+      another_owner = new_user()
+      another_site = new_site(owner: another_owner)
+      add_member(another_site.team, user: user, role: :owner)
+
+      delete(conn, "/me")
+
+      refute Repo.reload(user)
+    end
   end
 
   describe "GET /auth/google/callback" do

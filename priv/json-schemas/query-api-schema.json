@@ -109,6 +109,11 @@
               "additionalProperties": false
             }
           ]
+        },
+        "legacy_time_on_page_cutoff": {
+          "$comment": "only :internal",
+          "type": "string",
+          "format": "datetime"
         }
       }
     },
@@ -272,7 +277,7 @@
         },
         {
           "const": "scroll_depth",
-          "$comment": "only :internal"
+          "markdownDescription": "Average page scroll depth. Requires: `event:page` filter or `event:page` dimension"
         }
       ]
     },
@@ -462,10 +467,7 @@
         { "$ref": "#/definitions/filter_without_goals" },
         { "$ref": "#/definitions/filter_with_goals" },
         { "$ref": "#/definitions/filter_with_pattern" },
-        {
-          "$ref": "#/definitions/filter_for_segment",
-          "$comment": "only :internal"
-        }
+        { "$ref": "#/definitions/filter_for_segment" }
       ]
     },
     "filter_tree": {

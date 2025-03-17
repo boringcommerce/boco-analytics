@@ -10,7 +10,7 @@ defmodule PlausibleWeb.Api.ExternalStatsController do
   end
 
   def aggregate(conn, params) do
-    site = Repo.preload(conn.assigns.site, :owner)
+    site = Repo.preload(conn.assigns.site, :owners)
 
     params = Map.put(params, "property", nil)
 
@@ -20,13 +20,6 @@ defmodule PlausibleWeb.Api.ExternalStatsController do
          :ok <- validate_filters(site, query.filters),
          {:ok, metrics} <- parse_and_validate_metrics(params, query),
          :ok <- ensure_custom_props_access(site, query) do
-      query =
-        if params["compare"] == "previous_period" do
-          Query.set_include(query, :comparisons, %{mode: "previous_period"})
-        else
-          query
-        end
-
       %{results: results, meta: meta} = Plausible.Stats.aggregate(site, query, metrics)
 
       payload = maybe_add_warning(%{results: results}, meta)
@@ -38,7 +31,7 @@ defmodule PlausibleWeb.Api.ExternalStatsController do
   end
 
   def breakdown(conn, params) do
-    site = Repo.preload(conn.assigns.site, :owner)
+    site = Repo.preload(conn.assigns.site, :owners)
 
     with :ok <- validate_period(params),
          :ok <- validate_date(params),
@@ -246,7 +239,7 @@ defmodule PlausibleWeb.Api.ExternalStatsController do
   defp event_only_property?(_), do: false
 
   def timeseries(conn, params) do
-    site = Repo.preload(conn.assigns.site, :owner)
+    site = Repo.preload(conn.assigns.site, :owners)
 
     params = Map.put(params, "property", nil)
 

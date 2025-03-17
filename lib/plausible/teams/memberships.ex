@@ -7,6 +7,17 @@ defmodule Plausible.Teams.Memberships do
   alias Plausible.Repo
   alias Plausible.Teams
 
+  def all(team) do
+    query =
+      from tm in Teams.Membership,
+        inner_join: u in assoc(tm, :user),
+        where: tm.team_id == ^team.id,
+        order_by: [asc: u.id],
+        preload: [user: u]
+
+    Repo.all(query)
+  end
+
   def all_pending_site_transfers(email) do
     email
     |> pending_site_transfers_query()
@@ -32,6 +43,26 @@ defmodule Plausible.Teams.Memberships do
     case result do
       nil -> {:error, :not_a_member}
       role -> {:ok, role}
+    end
+  end
+
+  def can_add_site?(team, user) do
+    case team_role(team, user) do
+      {:ok, role} when role in [:owner, :admin, :editor] ->
+        true
+
+      _ ->
+        false
+    end
+  end
+
+  def can_transfer_site?(team, user) do
+    case team_role(team, user) do
+      {:ok, role} when role in [:owner, :admin] ->
+        true
+
+      _ ->
+        false
     end
   end
 
@@ -107,8 +138,13 @@ defmodule Plausible.Teams.Memberships do
         guest_membership =
           Repo.preload(guest_membership, [:site, team_membership: [:team, :user]])
 
-        Repo.delete!(guest_membership)
-        prune_guests(guest_membership.team_membership.team)
+        {:ok, _} =
+          Repo.transaction(fn ->
+            Repo.delete!(guest_membership)
+            prune_guests(guest_membership.team_membership.team)
+            Plausible.Segments.after_user_removed_from_site(site, user)
+          end)
+
         send_site_member_removed_email(guest_membership)
 
       {:error, _} ->

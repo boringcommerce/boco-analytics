@@ -11,6 +11,7 @@ import { useInView } from 'react-intersection-observer'
 import { FilterMenu } from './filter-menu'
 import { FiltersBar } from './filters-bar'
 import { QueryPeriodsPicker } from './query-periods/query-periods-picker'
+import { SegmentMenu } from './segments/segment-menu'
 
 interface TopBarProps {
   showCurrentVisitors: boolean
@@ -48,12 +49,12 @@ function TopBarStickyWrapper({ children }: { children: ReactNode }) {
 function TopBarInner({ showCurrentVisitors }: TopBarProps) {
   const site = useSiteContext()
   const user = useUserContext()
-  const { saved_segments } = site.flags
+  const { saved_segments, saved_segments_fe } = site.flags
   const leftActionsRef = useRef<HTMLDivElement>(null)
 
   return (
     <div className="flex items-center w-full">
-      {saved_segments ? (
+      {!!saved_segments && !!saved_segments_fe ? (
         <>
           <div
             className="flex items-center gap-x-4 shrink-0"
@@ -84,6 +85,7 @@ function TopBarInner({ showCurrentVisitors }: TopBarProps) {
           </div>
           <div className="flex gap-x-4 shrink-0">
             <FilterMenu />
+            <SegmentMenu />
             <QueryPeriodsPicker />
           </div>
         </>

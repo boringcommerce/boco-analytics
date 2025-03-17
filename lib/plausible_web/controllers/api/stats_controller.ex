@@ -5,7 +5,7 @@ defmodule PlausibleWeb.Api.StatsController do
   use PlausibleWeb.Plugs.ErrorHandler
 
   alias Plausible.Stats
-  alias Plausible.Stats.{Query, Comparisons, Filters, Time, TableDecider}
+  alias Plausible.Stats.{Query, Comparisons, Filters, Time, TableDecider, TimeOnPage}
   alias PlausibleWeb.Api.Helpers, as: H
 
   require Logger
@@ -123,13 +123,7 @@ defmodule PlausibleWeb.Api.StatsController do
   end
 
   defp plot_timeseries(timeseries, metric) do
-    Enum.map(timeseries, fn row ->
-      case row[metric] do
-        nil -> 0
-        %{value: value} -> value
-        value -> value
-      end
-    end)
+    Enum.map(timeseries, & &1[metric])
   end
 
   defp label_timeseries(main_result, nil) do
@@ -200,13 +194,16 @@ defmodule PlausibleWeb.Api.StatsController do
     %{
       top_stats: top_stats,
       meta: meta,
-      sample_percent: sample_percent
+      sample_percent: sample_percent,
+      graphable_metrics: graphable_metrics
     } = fetch_top_stats(site, query, current_user)
 
     comparison_query = comparison_query(query)
 
     json(conn, %{
       top_stats: top_stats,
+      meta: meta,
+      graphable_metrics: graphable_metrics,
       interval: query.interval,
       sample_percent: sample_percent,
       with_imported_switch: with_imported_switch_info(meta),
@@ -281,7 +278,8 @@ defmodule PlausibleWeb.Api.StatsController do
   end
 
   defp fetch_top_stats(site, query, current_user) do
-    goal_filter? = toplevel_goal_filter?(query)
+    goal_filter? =
+      toplevel_goal_filter?(query)
 
     cond do
       query.period == "30m" && goal_filter? ->
@@ -327,7 +325,12 @@ defmodule PlausibleWeb.Api.StatsController do
       }
     ]
 
-    %{top_stats: top_stats, meta: meta, sample_percent: 100}
+    %{
+      top_stats: top_stats,
+      meta: meta,
+      graphable_metrics: [:visitors, :events],
+      sample_percent: 100
+    }
   end
 
   defp fetch_realtime_top_stats(site, query) do
@@ -359,7 +362,12 @@ defmodule PlausibleWeb.Api.StatsController do
       }
     ]
 
-    %{top_stats: top_stats, meta: meta, sample_percent: 100}
+    %{
+      top_stats: top_stats,
+      meta: meta,
+      sample_percent: 100,
+      graphable_metrics: [:visitors, :pageviews]
+    }
   end
 
   defp fetch_goal_top_stats(site, query) do
@@ -382,30 +390,22 @@ defmodule PlausibleWeb.Api.StatsController do
       ]
       |> Enum.reject(&is_nil/1)
 
-    %{top_stats: top_stats, meta: meta, sample_percent: 100}
+    %{top_stats: top_stats, meta: meta, graphable_metrics: metrics, sample_percent: 100}
   end
 
   defp fetch_other_top_stats(site, query, current_user) do
     page_filter? =
       Filters.filtering_on_dimension?(query, "event:page", behavioral_filters: :ignore)
 
-    include_scroll_depth? = Plausible.Stats.ScrollDepth.feature_visible?(site, current_user)
-
     metrics = [:visitors, :visits, :pageviews, :sample_percent]
 
     metrics =
       cond do
-        page_filter? && include_scroll_depth? && query.include_imported ->
+        page_filter? && query.include_imported ->
           metrics ++ [:scroll_depth]
 
-        page_filter? && include_scroll_depth? ->
-          metrics ++ [:bounce_rate, :scroll_depth, :time_on_page]
-
-        page_filter? && query.include_imported ->
-          metrics
-
         page_filter? ->
-          metrics ++ [:bounce_rate, :time_on_page]
+          metrics ++ [:bounce_rate, :scroll_depth, :time_on_page]
 
         true ->
           metrics ++ [:views_per_visit, :bounce_rate, :visit_duration]
@@ -433,7 +433,16 @@ defmodule PlausibleWeb.Api.StatsController do
 
     sample_percent = results[:sample_percent][:value]
 
-    %{top_stats: top_stats, meta: meta, sample_percent: sample_percent}
+    %{
+      top_stats: top_stats,
+      meta: meta,
+      graphable_metrics:
+        if(TimeOnPage.new_time_on_page_enabled?(site, current_user),
+          do: metrics,
+          else: metrics -- [:time_on_page]
+        ),
+      sample_percent: sample_percent
+    }
   end
 
   defp top_stats_entry(current_results, name, key, opts \\ []) do
@@ -846,23 +855,15 @@ defmodule PlausibleWeb.Api.StatsController do
 
   def pages(conn, params) do
     site = conn.assigns[:site]
-    current_user = conn.assigns[:current_user]
 
     params = Map.put(params, "property", "event:page")
     query = Query.from(site, params, debug_metadata(conn))
 
-    include_scroll_depth? = Plausible.Stats.ScrollDepth.feature_visible?(site, current_user)
-
     extra_metrics =
-      cond do
-        params["detailed"] && include_scroll_depth? ->
-          [:pageviews, :bounce_rate, :time_on_page, :scroll_depth]
-
-        params["detailed"] ->
-          [:pageviews, :bounce_rate, :time_on_page]
-
-        true ->
-          []
+      if params["detailed"] do
+        [:pageviews, :bounce_rate, :time_on_page, :scroll_depth]
+      else
+        []
       end
 
     metrics = breakdown_metrics(query, extra_metrics)
@@ -880,17 +881,13 @@ defmodule PlausibleWeb.Api.StatsController do
         |> transform_keys(%{visitors: :conversions})
         |> to_csv([:name, :conversions, :conversion_rate])
       else
-        cols = [:name, :visitors, :pageviews, :bounce_rate, :time_on_page]
-
-        # credo:disable-for-next-line Credo.Check.Refactor.Nesting
-        cols = if include_scroll_depth?, do: cols ++ [:scroll_depth], else: cols
-
+        cols = [:name, :visitors, :pageviews, :bounce_rate, :time_on_page, :scroll_depth]
         pages |> to_csv(cols)
       end
     else
       json(conn, %{
         results: pages,
-        meta: Stats.Breakdown.formatted_date_ranges(query),
+        meta: Map.merge(meta, Stats.Breakdown.formatted_date_ranges(query)),
         skip_imported_reason: meta[:imports_skip_reason]
       })
     end
@@ -1630,7 +1627,7 @@ defmodule PlausibleWeb.Api.StatsController do
 
   def comparison_query(query) do
     if query.include.comparisons do
-      Comparisons.get_comparison_query(query, query.include.comparisons)
+      Comparisons.get_comparison_query(query)
     end
   end
 
@@ -1661,6 +1658,9 @@ defmodule PlausibleWeb.Api.StatsController do
   defp realtime_period_to_30m(params), do: params
 
   defp toplevel_goal_filter?(query) do
-    Filters.filtering_on_dimension?(query, "event:goal", max_depth: 0)
+    Filters.filtering_on_dimension?(query, "event:goal",
+      max_depth: 0,
+      behavioral_filters: :ignore
+    )
   end
 end

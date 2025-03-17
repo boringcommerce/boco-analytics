@@ -8,31 +8,45 @@ defmodule Plausible.Teams.Sites do
   alias Plausible.Site
   alias Plausible.Teams
 
-  @type list_opt() :: {:filter_by_domain, String.t()}
+  @type list_opt() :: {:filter_by_domain, String.t()} | {:team, Teams.Team.t() | nil}
 
   @spec list(Auth.User.t(), map(), [list_opt()]) :: Scrivener.Page.t()
   def list(user, pagination_params, opts \\ []) do
     domain_filter = Keyword.get(opts, :filter_by_domain)
+    team = Keyword.get(opts, :team)
 
-    team_membership_query =
-      from tm in Teams.Membership,
-        inner_join: t in assoc(tm, :team),
-        inner_join: s in assoc(t, :sites),
-        where: tm.user_id == ^user.id and tm.role != :guest,
-        select: %{site_id: s.id, entry_type: "site"}
+    all_query =
+      if Teams.setup?(team) do
+        from(tm in Teams.Membership,
+          inner_join: t in assoc(tm, :team),
+          inner_join: s in assoc(t, :sites),
+          where: tm.user_id == ^user.id and tm.role != :guest,
+          where: tm.team_id == ^team.id,
+          select: %{site_id: s.id, entry_type: "site"}
+        )
+      else
+        my_team_query =
+          from(tm in Teams.Membership,
+            inner_join: t in assoc(tm, :team),
+            inner_join: s in assoc(t, :sites),
+            where: tm.user_id == ^user.id and tm.role != :guest,
+            where: tm.is_autocreated == true,
+            where: t.setup_complete == false,
+            select: %{site_id: s.id, entry_type: "site"}
+          )
 
-    guest_membership_query =
-      from tm in Teams.Membership,
-        inner_join: gm in assoc(tm, :guest_memberships),
-        inner_join: s in assoc(gm, :site),
-        where: tm.user_id == ^user.id and tm.role == :guest,
-        select: %{site_id: s.id, entry_type: "site"}
+        guest_membership_query =
+          from tm in Teams.Membership,
+            inner_join: gm in assoc(tm, :guest_memberships),
+            inner_join: s in assoc(gm, :site),
+            where: tm.user_id == ^user.id and tm.role == :guest,
+            select: %{site_id: s.id, entry_type: "site"}
 
-    union_query =
-      from s in team_membership_query,
-        union_all: ^guest_membership_query
+        from s in my_team_query,
+          union_all: ^guest_membership_query
+      end
 
-    from(u in subquery(union_query),
+    from(u in subquery(all_query),
       inner_join: s in Plausible.Site,
       on: u.site_id == s.id,
       as: :site,
@@ -71,29 +85,7 @@ defmodule Plausible.Teams.Sites do
   @spec list_with_invitations(Auth.User.t(), map(), [list_opt()]) :: Scrivener.Page.t()
   def list_with_invitations(user, pagination_params, opts \\ []) do
     domain_filter = Keyword.get(opts, :filter_by_domain)
-
-    team_membership_query =
-      from tm in Teams.Membership,
-        inner_join: t in assoc(tm, :team),
-        inner_join: u in assoc(tm, :user),
-        as: :user,
-        inner_join: s in assoc(t, :sites),
-        as: :site,
-        where: tm.user_id == ^user.id and tm.role != :guest,
-        where:
-          not exists(
-            from st in Teams.SiteTransfer,
-              where: st.email == parent_as(:user).email,
-              where: st.site_id == parent_as(:site).id
-          ),
-        select: %{
-          site_id: s.id,
-          entry_type: "site",
-          guest_invitation_id: 0,
-          team_invitation_id: 0,
-          role: tm.role,
-          transfer_id: 0
-        }
+    team = Keyword.get(opts, :team)
 
     guest_membership_query =
       from(tm in Teams.Membership,
@@ -191,10 +183,60 @@ defmodule Plausible.Teams.Sites do
         }
 
     union_query =
-      from s in team_membership_query,
-        union_all: ^guest_membership_query,
-        union_all: ^guest_invitation_query,
-        union_all: ^site_transfer_query
+      if Teams.setup?(team) do
+        team_membership_query =
+          from(tm in Teams.Membership,
+            inner_join: t in assoc(tm, :team),
+            inner_join: u in assoc(tm, :user),
+            as: :user,
+            inner_join: s in assoc(t, :sites),
+            as: :site,
+            where: tm.user_id == ^user.id and tm.role != :guest,
+            where: tm.team_id == ^team.id,
+            where:
+              not exists(
+                from st in Teams.SiteTransfer,
+                  where: st.email == parent_as(:user).email,
+                  where: st.site_id == parent_as(:site).id
+              ),
+            select: %{
+              site_id: s.id,
+              entry_type: "site",
+              guest_invitation_id: 0,
+              team_invitation_id: 0,
+              role: tm.role,
+              transfer_id: 0
+            }
+          )
+
+        from s in team_membership_query,
+          union_all: ^site_transfer_query
+      else
+        my_team_query =
+          from(tm in Teams.Membership,
+            inner_join: t in assoc(tm, :team),
+            inner_join: u in assoc(tm, :user),
+            as: :user,
+            inner_join: s in assoc(t, :sites),
+            as: :site,
+            where: tm.user_id == ^user.id and tm.role != :guest,
+            where: tm.is_autocreated == true,
+            where: t.setup_complete == false,
+            select: %{
+              site_id: s.id,
+              entry_type: "site",
+              guest_invitation_id: 0,
+              team_invitation_id: 0,
+              role: tm.role,
+              transfer_id: 0
+            }
+          )
+
+        from s in my_team_query,
+          union_all: ^guest_membership_query,
+          union_all: ^guest_invitation_query,
+          union_all: ^site_transfer_query
+      end
 
     from(u in subquery(union_query),
       inner_join: s in Plausible.Site,

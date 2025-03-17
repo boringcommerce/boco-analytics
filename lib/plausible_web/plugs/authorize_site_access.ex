@@ -38,7 +38,7 @@ defmodule PlausibleWeb.Plugs.AuthorizeSiteAccess do
   import Plug.Conn
   import Phoenix.Controller, only: [get_format: 1]
 
-  @all_roles [:public, :viewer, :admin, :editor, :super_admin, :owner]
+  @all_roles [:public, :viewer, :admin, :editor, :super_admin, :owner, :billing]
 
   def init([]), do: {@all_roles, nil}
 
@@ -110,7 +110,7 @@ defmodule PlausibleWeb.Plugs.AuthorizeSiteAccess do
         site =
           site
           |> Repo.preload([
-            :owner,
+            :owners,
             :completed_imports,
             team: [subscription: Plausible.Teams.last_subscription_query()]
           ])

@@ -35,7 +35,8 @@ defmodule Plausible.Ingestion.Event do
           | :site_hostname_allowlist
           | :verification_agent
           | :lock_timeout
-          | :no_session_for_pageleave
+          | :no_session_for_engagement
+          | :blank_engagement
 
   @type t() :: %__MODULE__{
           domain: String.t() | nil,
@@ -57,6 +58,7 @@ defmodule Plausible.Ingestion.Event do
         for domain <- domains, do: drop(new(domain, request), :spam_referrer)
       else
         Enum.reduce(domains, [], fn domain, acc ->
+          # credo:disable-for-next-line Credo.Check.Refactor.Nesting
           case GateKeeper.check(domain) do
             {:allow, site} ->
               processed =
@@ -113,6 +115,7 @@ defmodule Plausible.Ingestion.Event do
 
   defp pipeline() do
     [
+      drop_blank_engagement: &drop_blank_engagement/2,
       drop_verification_agent: &drop_verification_agent/2,
       drop_datacenter_ip: &drop_datacenter_ip/2,
       drop_shield_rule_hostname: &drop_shield_rule_hostname/2,
@@ -175,6 +178,16 @@ defmodule Plausible.Ingestion.Event do
 
   defp update_session_attrs(%__MODULE__{} = event, %{} = attrs) do
     struct!(event, clickhouse_session_attrs: Map.merge(event.clickhouse_session_attrs, attrs))
+  end
+
+  defp drop_blank_engagement(%__MODULE__{} = event, _context) do
+    case event.request do
+      %{event_name: "engagement", scroll_depth: 255, engagement_time: 0} ->
+        drop(event, :blank_engagement)
+
+      _ ->
+        event
+    end
   end
 
   defp drop_verification_agent(%__MODULE__{} = event, _context) do
@@ -251,7 +264,8 @@ defmodule Plausible.Ingestion.Event do
       name: event.request.event_name,
       hostname: event.request.hostname,
       pathname: event.request.pathname,
-      scroll_depth: event.request.scroll_depth
+      scroll_depth: event.request.scroll_depth,
+      engagement_time: event.request.engagement_time
     })
   end
 
@@ -381,21 +395,21 @@ defmodule Plausible.Ingestion.Event do
         event.clickhouse_event,
         event.clickhouse_session_attrs,
         previous_user_id,
-        write_buffer_insert
+        buffer_insert: write_buffer_insert
       )
 
     case session_result do
+      {:ok, :no_session_for_engagement} ->
+        drop(event, :no_session_for_engagement)
+
+      {:error, :timeout} ->
+        drop(event, :lock_timeout)
+
       {:ok, session} ->
         %{
           event
           | clickhouse_event: ClickhouseEventV2.merge_session(event.clickhouse_event, session)
         }
-
-      {:error, :no_session_for_pageleave} ->
-        drop(event, :no_session_for_pageleave)
-
-      {:error, :timeout} ->
-        drop(event, :lock_timeout)
     end
   end
 
@@ -462,16 +476,6 @@ defmodule Plausible.Ingestion.Event do
 
       %Device{type: t} when t in @desktop_types ->
         "Desktop"
-
-      %Device{type: :unknown} ->
-        nil
-
-      %Device{type: type} ->
-        Sentry.capture_message("Could not determine device type from UAInspector",
-          extra: %{type: type}
-        )
-
-        nil
 
       _ ->
         nil

@@ -43,8 +43,8 @@ defmodule Plausible.Stats.QueryResult do
 
   defp meta(%QueryRunner{} = runner) do
     %{}
-    |> add_imports_meta(runner)
-    |> add_metric_warnings_meta(runner)
+    |> add_imports_meta(runner.main_query)
+    |> add_metric_warnings_meta(runner.main_query)
     |> add_time_labels_meta(runner.main_query)
     |> add_total_rows_meta(runner.main_query, runner.total_rows)
   end
@@ -57,30 +57,12 @@ defmodule Plausible.Stats.QueryResult do
       "Imported stats are not included because the time dimension (i.e. the interval) is too short."
   }
 
-  defp add_imports_meta(meta, %QueryRunner{} = runner) do
-    %{main_query: %{include: include} = main_query} = runner
-
-    if include.imports or include[:imports_meta] do
-      comparison_query = Map.get(runner, :comparison_query)
-
-      imports_included =
-        case comparison_query do
-          %Query{include_imported: true} -> true
-          _ -> main_query.include_imported
-        end
-
-      imports_skip_reason =
-        case comparison_query do
-          %Query{skip_imported_reason: nil} -> nil
-          _ -> main_query.skip_imported_reason
-        end
-
-      imports_warning = @imports_warnings[imports_skip_reason]
-
+  defp add_imports_meta(meta, %Query{include: include} = query) do
+    if include.imports or include.imports_meta do
       %{
-        imports_included: imports_included,
-        imports_skip_reason: imports_skip_reason,
-        imports_warning: imports_warning
+        imports_included: query.include_imported,
+        imports_skip_reason: query.skip_imported_reason,
+        imports_warning: @imports_warnings[query.skip_imported_reason]
       }
       |> Map.reject(fn {_key, value} -> is_nil(value) end)
       |> Map.merge(meta)
@@ -89,7 +71,7 @@ defmodule Plausible.Stats.QueryResult do
     end
   end
 
-  defp add_metric_warnings_meta(meta, %QueryRunner{main_query: query}) do
+  defp add_metric_warnings_meta(meta, query) do
     warnings = metric_warnings(query)
 
     if map_size(warnings) > 0 do
@@ -129,7 +111,7 @@ defmodule Plausible.Stats.QueryResult do
     end
   end
 
-  defp metric_warnings(query) do
+  defp metric_warnings(%Query{} = query) do
     Enum.reduce(query.metrics, %{}, fn metric, acc ->
       case metric_warning(metric, query) do
         nil -> acc
@@ -150,7 +132,8 @@ defmodule Plausible.Stats.QueryResult do
         "Revenue metrics are null as there are no matching revenue goals."
     }
 
-    defp metric_warning(metric, query) when metric in @revenue_metrics do
+    defp metric_warning(metric, %Query{} = query)
+         when metric in @revenue_metrics do
       if query.revenue_warning do
         %{
           code: query.revenue_warning,
@@ -159,6 +142,33 @@ defmodule Plausible.Stats.QueryResult do
       else
         nil
       end
+    end
+  end
+
+  @no_imported_scroll_depth_metric_warning %{
+    code: :no_imported_scroll_depth,
+    warning: "No imports with scroll depth data were found"
+  }
+
+  defp metric_warning(:scroll_depth, %Query{} = query) do
+    if query.include_imported and not Enum.any?(query.imports_in_range, & &1.has_scroll_depth) do
+      @no_imported_scroll_depth_metric_warning
+    end
+  end
+
+  defp metric_warning(:time_on_page, %Query{} = query) do
+    case query.time_on_page_data do
+      %{include_legacy_metric: true, cutoff: cutoff} ->
+        cutoff_time =
+          cutoff |> DateTime.shift_zone!(query.timezone) |> Calendar.strftime("%Y-%m-%d %H:%M:%S")
+
+        %{
+          code: :legacy_time_on_page_used,
+          message: "Contains less accurate legacy time-on-page data up to #{cutoff_time}"
+        }
+
+      _ ->
+        nil
     end
   end
 
